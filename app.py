@@ -4,84 +4,78 @@ import requests
 import xml.etree.ElementTree as ET
 import yfinance as yf
 import pandas_ta as ta
+import pandas as pd
+from dotenv import load_dotenv
 from anthropic import Anthropic
 
-# 1. API 키 설정 (보안 유지)
-api_key = st.secrets.get("ANTHROPIC_API_KEY")
+# 1. 페이지 설정
+st.set_page_config(page_title="AI 퀀트 투자 리포트", page_icon="📈", layout="centered")
+
+# 2. 환경 설정 및 API 로드
+load_dotenv()
+api_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
 client = Anthropic(api_key=api_key)
 
-# 페이지 설정
-st.set_page_config(page_title="실시간 AI 퀀트 리포트", layout="wide")
-st.title("📈 실시간 AI+퀀트 투자 리포트")
-st.caption("Claude 4.5 Sonnet 기반 전문가용 분석 솔루션")
+# 3. 데이터 수집 함수 (뉴스 + 퀀트 지표)
+def get_headlines():
+    url = "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=ko&gl=KR&ceid=KR:ko"
+    root = ET.fromstring(requests.get(url).content)
+    items = root.findall('.//item')[:15]
+    return "\n".join([f"{i + 1}. {item.find('title').text}" for i, item in enumerate(items)])
 
-# 2. 뉴스 수집 (비용 절감을 위해 상위 10개만 추출)
-def get_stock_news():
-    url = "https://news.google.com/rss/search?q=주식+시장+전망+OR+급등주&hl=ko&gl=KR&ceid=KR:ko"
-    try:
-        response = requests.get(url, timeout=10)
-        root = ET.fromstring(response.content)
-        news_list = [f"- {item.find('title').text}" for item in root.findall('.//item')[:10]]
-        return "\n".join(news_list)
-    except:
-        return "뉴스를 가져오지 못했습니다."
+def get_quant_data():
+    # KOSPI 지수 데이터를 Pandas로 분석
+    df = yf.download("^KS11", period="60d", interval="1d", progress=False)
+    if not df.empty:
+        df['RSI'] = ta.rsi(df['Close'], length=14)
+        df['MA20'] = ta.sma(df['Close'], length=20)
+        last_rsi = df['RSI'].iloc[-1]
+        last_close = df['Close'].iloc[-1]
+        ma20 = df['MA20'].iloc[-1]
+        return f"현재 KOSPI: {last_close:.2f}, RSI(14): {last_rsi:.1f}, 20일 이평선: {ma20:.2f}"
+    return "지수 데이터 로드 실패"
 
-# 3. 시장 지수 수집 (아까 성공한 로직 기반 안정화)
-def get_market_data():
-    indices = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11", "S&P500": "^GSPC", "나스닥": "^IXIC"}
-    data_summary = ""
-    for name, ticker in indices.items():
+# --- UI 화면 구성 ---
+st.title("📊 실시간 AI+퀀트 투자 리포트")
+st.markdown("매일 아침 시장 이슈와 **데이터 기반** 급등 종목을 분석합니다.")
+
+if st.button("🚀 오늘자 리포트 생성 시작"):
+    with st.spinner("Pandas 지표 계산 및 AI 분석 중..."):
         try:
-            # auto_adjust=True로 데이터 구조 단순화
-            df = yf.download(ticker, period="60d", interval="1d", progress=False, auto_adjust=True)
-            if not df.empty:
-                rsi_series = ta.rsi(df['Close'], length=14)
-                
-                # 데이터가 어떤 형태든 마지막 숫자만 정확히 추출 (가장 안전한 방법)
-                last_close = float(df['Close'].values[-1])
-                last_rsi = float(rsi_series.values[-1])
-                
-                data_summary += f"{name}: 현재가 {last_close:.2f}, RSI {last_rsi:.1f}\n"
-        except:
-            continue
-    return data_summary
+            combined_headlines = get_headlines()
+            quant_metrics = get_quant_data()
 
-# 4. 분석 실행
-if st.button("🚀 전문가 리포트 생성 시작"):
-    with st.spinner("데이터 분석 중... 잠시만 기다려 주세요."):
-        news_context = get_stock_news()
-        market_context = get_market_data()
-        
-        # [전문가용 프롬프트] 가독성 향상 및 출력 토큰 절약 설계
-        prompt = f"""너는 15년 경력의 수석 퀀트 애널리스트다. 아래 데이터를 분석해라.
-        
-        [시장 지표]
-        {market_context}
-        [주요 뉴스]
-        {news_context}
-        
-        [작성 규칙]
-        1. 인사말, 서론 생략. 바로 본론 표(Table)부터 시작해라.
-        2. [시장 상황], [특징주/전략], [리스크] 세 섹션으로 구성해라.
-        3. 투자의견은 '매수/매도/관망' 중 하나로 제시하고 이유를 1줄 요약해라.
-        4. 전문가답게 핵심 위주로 800토큰 이내로 간결하게 써라. 한국어 사용."""
+            # Claude 4.5 분석 요청 (지표 데이터 추가)
+            prompt = f"""
+            너는 대한민국 최고의 퀀트 투자 분석가야. 아래 뉴스 데이터와 퀀트 지표를 보고 투자 리포트를 작성해라.
+            절대 중간에 끊지 말고, 마지막 '실행 가이드'까지 완벽하게 작성해.
 
-        try:
-            message = client.messages.create(
+            [뉴스 데이터]:
+            {combined_headlines}
+
+            [퀀트 지표(Pandas 분석)]:
+            {quant_metrics}
+
+            [출력 요구사항]:
+            1. 📰 메인 뉴스 제목: 파급력 큰 3가지
+            2. 💡 인사이트: 뉴스 이면의 의도 분석
+            3. 🚀 1주일 내 5% 급등 기대 종목 Top 1: (종목명/목표가/손절가)
+            4. 🎯 추천 이유: 기술적 지표(RSI 등)와 뉴스 재료 결합 분석
+            5. 🏁 최종 실행 가이드: 내일 오전 구체적 대응 전략
+            """
+
+            response = client.messages.create(
                 model="claude-sonnet-4-5-20250929",
-                max_tokens=1000,
-                temperature=0,
+                max_tokens=4000,
+                temperature=0.7,
                 messages=[{"role": "user", "content": prompt}]
             )
-            st.markdown("---")
-            st.markdown(message.content[0].text)
-            st.success("✅ 분석이 완료되었습니다. (비용 최적화 모드)")
-        except Exception as e:
-            st.error(f"AI 호출 오류: {e}")
 
-# 사이드바 (운영 정보)
-with st.sidebar:
-    st.info("💡 운영 팁")
-    st.write("- 뉴스 10개 제한으로 입력 비용 절감")
-    st.write("- 표 형식 출력으로 가독성 및 출력 비용 최적화")
-    st.write(f"- 현재 잔액: $4.66 내외")
+            st.markdown("---")
+            st.markdown(response.content[0].text)
+            st.success("✅ 퀀트 데이터 기반 리포트 생성 완료!")
+
+        except Exception as e:
+            st.error(f"❌ 오류가 발생했습니다: {e}")
+
+st.sidebar.info(f"운영 모드: Pandas 퀀트 엔진 가동 중\n모델: Claude 4.5 Sonnet")
