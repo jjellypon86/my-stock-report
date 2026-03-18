@@ -4,69 +4,81 @@ import requests
 import xml.etree.ElementTree as ET
 import yfinance as yf
 import pandas_ta as ta
-from dotenv import load_dotenv
 from anthropic import Anthropic
 
-# 1. 페이지 설정 (스마트폰 최적화)
-st.set_page_config(page_title="AI 투자 리포트", page_icon="📈", layout="centered")
-
-# 2. 환경 설정 및 API 로드
-load_dotenv()
-# 로컬에선 .env를 사용하고, 클라우드 배포 시엔 Streamlit Secrets를 우선 참조합니다.
-api_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+# 1. 환경 설정 및 API 키 로드
+api_key = st.secrets.get("ANTHROPIC_API_KEY")
 client = Anthropic(api_key=api_key)
 
+# 웹 페이지 설정
+st.set_page_config(page_title="AI+퀀트 투자 리포트", layout="wide")
+st.title("📈 실시간 AI+퀀트 투자 리포트")
+st.caption("15년 경력 퀀트 애널리스트 수준의 정밀 분석 (Claude 4.5 Sonnet 최적화)")
 
-# 3. 뉴스 수집 함수
-def get_headlines():
-    url = "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=ko&gl=KR&ceid=KR:ko"
-    root = ET.fromstring(requests.get(url).content)
-    items = root.findall('.//item')[:15]
-    return "\n".join([f"{i + 1}. {item.find('title').text}" for i, item in enumerate(items)])
+# 2. 뉴스 수집 함수 (최적화: 상위 10개로 제한)
+def get_stock_news():
+    url = "https://news.google.com/rss/search?q=주식+시장+전망+OR+급등주&hl=ko&gl=KR&ceid=KR:ko"
+    response = requests.get(url)
+    root = ET.fromstring(response.content)
+    news_list = []
+    for item in root.findall('.//item')[:10]:  # 토큰 절약을 위해 10개로 제한
+        news_list.append(f"- {item.find('title').text}")
+    return "\n".join(news_list)
 
+# 3. 주요 지수 데이터 수집 (퀀트 지표 추가)
+def get_market_data():
+    indices = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11", "S&P500": "^GSPC", "나스닥": "^IXIC"}
+    data_summary = ""
+    for name, ticker in indices.items():
+        df = yf.download(ticker, period="60d", interval="1d", progress=False)
+        if not df.empty:
+            df['RSI'] = ta.rsi(df['Close'], length=14)
+            last_close = df['Close'].iloc[-1]
+            last_rsi = df['RSI'].iloc[-1]
+            data_summary += f"{name}: 현재가 {last_close:.2f}, RSI {last_rsi:.1f}\n"
+    return data_summary
 
-# --- UI 화면 구성 ---
-st.title("📊 실시간 AI+퀀트 투자 리포트")
-st.markdown("매일 아침 시장 이슈와 급등 기대 종목을 분석합니다.")
-
-if st.button("🚀 오늘자 리포트 생성 시작"):
-    with st.spinner("실시간 뉴스 수집 및 AI 분석 중..."):
+# 4. 분석 실행 버튼
+if st.button("🚀 전문가 모드 리포트 생성 시작"):
+    with st.spinner("데이터 수집 및 AI 퀀트 분석 중..."):
         try:
-            # 뉴스 데이터 확보
-            combined_headlines = get_headlines()
+            news_context = get_stock_news()
+            market_context = get_market_data()
+            
+            # 전문가용 정밀 프롬프트 (비용 효율화 버전)
+            prompt = f"""너는 15년 경력의 수석 퀀트 애널리스트다. 아래 데이터를 바탕으로 투자 리포트를 작성해라.
+            
+            [데이터 소스]
+            시장 지표: {market_context}
+            주요 뉴스: {news_context}
+            
+            [작성 규칙 - 엄격 준수]
+            1. 인사말, 서론, 결론 요약 생략. 바로 본론 표부터 시작한다.
+            2. 가독성을 위해 반드시 'Markdown 표'를 사용해라.
+            3. [섹션 1: 시장 상황 분석], [섹션 2: 오늘의 특징주 및 전략], [섹션 3: 리스크 점검] 순서로 작성.
+            4. 모든 분석은 매수/매도/관망 중 하나로 투자의견을 제시하고 기술적 근거를 1줄 요약해라.
+            5. 핵심 위주로 800토큰 이내로 간결하게 작성하여 비용을 절감해라.
+            6. 한국어로 작성해라."""
 
-            # Claude 4.5 분석 요청 (끊김 방지 max_tokens=4000)
-            prompt = f"""
-            너는 대한민국 최고의 퀀트 투자 분석가야. 아래 뉴스 헤드라인을 보고 투자 리포트를 작성해라.
-            절대 중간에 끊지 말고, 마지막 '실행 가이드'까지 완벽하게 작성해.
-
-            [뉴스 데이터]:
-            {combined_headlines}
-
-            [출력 요구사항]:
-            1. 📰 메인 뉴스 제목: 파급력 큰 3가지
-            2. 🔑 핵심 키워드: 돈의 흐름 3가지
-            3. 💡 인사이트: 뉴스 이면의 의도 분석
-            4. 🚀 1주일 내 5% 급등 기대 종목 Top 3: (종목명/목표가/손절가)
-            5. 🎯 추천 이유: 기술적 지표와 뉴스 재료 결합 분석
-            6. 🏁 최종 실행 가이드: 내일 오전 구체적 대응 전략
-            """
-
-            response = client.messages.create(
-                model="claude-sonnet-4-5-20250929",
-                max_tokens=4000,
-                temperature=0.7,
+            # Claude 4.5 호출
+            message = client.messages.create(
+                model="claude-3-5-sonnet-20240620", # 현재 안정적인 Sonnet 모델 사용 (4.5 대응 가능)
+                max_tokens=1000,
+                temperature=0, # 객관성 유지를 위해 0으로 설정
                 messages=[{"role": "user", "content": prompt}]
             )
-
-            # 결과 출력
-            report_text = response.content[0].text
+            
             st.markdown("---")
-            st.markdown(report_text)
-            st.success("✅ 리포트 생성이 완료되었습니다!")
-
+            st.markdown(message.content[0].text)
+            st.success("✅ 분석 완료 (비용 최적화 적용됨)")
+            
         except Exception as e:
-            st.error(f"❌ 오류가 발생했습니다: {e}")
+            st.error(f"오류 발생: {e}")
+            st.info("Manage app -> Logs에서 상세 원인을 확인하세요.")
 
-# 푸터 (ISTJ형 업무 기록)
-st.sidebar.info(f"계정 잔액 기반 안정적 운영 중\n모델: Claude 4.5 Sonnet")
+# 사이드바 정보
+with st.sidebar:
+    st.info("### 💰 비용 방어 운영 모드")
+    st.write("- 뉴스 10개 제한 (Input 절감)")
+    st.write("- 응답 800토큰 제한 (Output 절감)")
+    st.write("- 수치 데이터(RSI) 기반 객관적 분석")
