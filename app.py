@@ -16,7 +16,7 @@ load_dotenv()
 api_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
 client = Anthropic(api_key=api_key)
 
-# 3. 데이터 수집 함수 (뉴스 + 퀀트 지표)
+# 3. 데이터 수집 함수
 def get_headlines():
     url = "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=ko&gl=KR&ceid=KR:ko"
     root = ET.fromstring(requests.get(url).content)
@@ -24,16 +24,23 @@ def get_headlines():
     return "\n".join([f"{i + 1}. {item.find('title').text}" for i, item in enumerate(items)])
 
 def get_quant_data():
-    # KOSPI 지수 데이터를 Pandas로 분석
-    df = yf.download("^KS11", period="60d", interval="1d", progress=False)
-    if not df.empty:
-        df['RSI'] = ta.rsi(df['Close'], length=14)
-        df['MA20'] = ta.sma(df['Close'], length=20)
-        last_rsi = df['RSI'].iloc[-1]
-        last_close = df['Close'].iloc[-1]
-        ma20 = df['MA20'].iloc[-1]
-        return f"현재 KOSPI: {last_close:.2f}, RSI(14): {last_rsi:.1f}, 20일 이평선: {ma20:.2f}"
-    return "지수 데이터 로드 실패"
+    try:
+        # auto_adjust=True로 데이터 구조 단순화 및 데이터 로드
+        df = yf.download("^KS11", period="60d", interval="1d", progress=False, auto_adjust=True)
+        if not df.empty:
+            # RSI 및 이평선 계산
+            df['RSI'] = ta.rsi(df['Close'], length=14)
+            df['MA20'] = ta.sma(df['Close'], length=20)
+            
+            # [핵심 수정] .iloc[-1] 뒤에 float()를 붙여 '순수 숫자'로 변환 (Series 에러 방지)
+            last_close = float(df['Close'].iloc[-1])
+            last_rsi = float(df['RSI'].iloc[-1])
+            ma20 = float(df['MA20'].iloc[-1])
+            
+            return f"현재 KOSPI: {last_close:.2f}, RSI(14): {last_rsi:.1f}, 20일 이평선: {ma20:.2f}"
+    except Exception as e:
+        return f"지수 데이터 분석 실패: {e}"
+    return "데이터 없음"
 
 # --- UI 화면 구성 ---
 st.title("📊 실시간 AI+퀀트 투자 리포트")
@@ -45,7 +52,7 @@ if st.button("🚀 오늘자 리포트 생성 시작"):
             combined_headlines = get_headlines()
             quant_metrics = get_quant_data()
 
-            # Claude 4.5 분석 요청 (지표 데이터 추가)
+            # Claude 4.5 분석 요청 (사용자님이 지정한 4.5 모델명 고정)
             prompt = f"""
             너는 대한민국 최고의 퀀트 투자 분석가야. 아래 뉴스 데이터와 퀀트 지표를 보고 투자 리포트를 작성해라.
             절대 중간에 끊지 말고, 마지막 '실행 가이드'까지 완벽하게 작성해.
