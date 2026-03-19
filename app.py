@@ -3,6 +3,7 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 import yfinance as yf
+from pykrx import stock as krx
 import pandas_ta as ta
 import datetime
 from dotenv import load_dotenv
@@ -43,14 +44,23 @@ def get_market_context():
 
 # 4. 실시간 시세 검증 함수 (시세 오류 방지용 추가)
 def verify_realtime_price(ticker_code):
-    for suffix in [".KQ", ".KS"]:
-        full_ticker = f"{ticker_code}{suffix}"
-        stock = yf.Ticker(full_ticker)
-        df = stock.history(period="2d")
+    try:
+        # 오늘 날짜 확인
+        today = datetime.date.today().strftime("%Y%m%d")
+        # 네이버/KRX에서 해당 종목의 오늘 시세 가져오기
+        df = krx.get_market_ohlcv_by_date(today, today, ticker_code)
+        
+        if df.empty:
+            # 오늘 장 시작 전이면 어제 종가 가져오기
+            yesterday = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y%m%d")
+            df = krx.get_market_ohlcv_by_date(yesterday, yesterday, ticker_code)
+
         if not df.empty:
-            last_date = df.index[-1].date()
-            if (datetime.date.today() - last_date).days <= 3:
-                return float(df['Close'].iloc[-1]), full_ticker
+            current_price = int(df['종가'].iloc[-1])
+            return current_price, f"{ticker_code} (K-Market)"
+            
+    except Exception as e:
+        st.error(f"시세 조회 오류: {e}")
     return None, None
 
 # --- UI 화면 및 실행 ---
