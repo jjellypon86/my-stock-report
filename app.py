@@ -4,18 +4,17 @@ import requests
 import xml.etree.ElementTree as ET
 import yfinance as yf
 import pandas_ta as ta
+import datetime
 from dotenv import load_dotenv
 from anthropic import Anthropic
 
-# 1. 페이지 설정
+# 1. 초기 인프라 설정
 st.set_page_config(page_title="AI 투자 리포트", page_icon="📈", layout="centered")
-
-# 2. 환경 설정 및 API 로드
 load_dotenv()
 api_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
 client = Anthropic(api_key=api_key)
 
-# 3. 뉴스 수집 함수 (범위 확장)
+# 2. 뉴스 수집 함수 (기존 30개 확장 로직 복구)
 def get_headlines():
     urls = [
         "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=ko&gl=KR&ceid=KR:ko",
@@ -28,7 +27,7 @@ def get_headlines():
     sorted_headlines = sorted(list(set(all_headlines))) 
     return "\n".join([f"{i + 1}. {title}" for i, title in enumerate(sorted_headlines)])
 
-# 4. 시장 지수 분석 (종목 선정을 위한 환경 데이터)
+# 3. 시장 지수 분석 (기존 60일 RSI 로직 복구)
 def get_market_context():
     indices = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11"}
     summary = ""
@@ -42,43 +41,74 @@ def get_market_context():
         except: continue
     return summary
 
-# --- UI 화면 구성 ---
-st.title("📊 실시간 AI+퀀트 투자 리포트")
-st.markdown("양대 시장을 스캔하여 **오늘의 무조건 베스트 1 종목**을 분석합니다.")
+# 4. 실시간 시세 검증 함수 (시세 오류 방지용 추가)
+def verify_realtime_price(ticker_code):
+    for suffix in [".KQ", ".KS"]:
+        full_ticker = f"{ticker_code}{suffix}"
+        stock = yf.Ticker(full_ticker)
+        df = stock.history(period="2d")
+        if not df.empty:
+            last_date = df.index[-1].date()
+            if (datetime.date.today() - last_date).days <= 3:
+                return float(df['Close'].iloc[-1]), full_ticker
+    return None, None
 
-if st.button("🚀 오늘자 리포트 생성 시작"):
-    with st.spinner("전 종목 모멘텀 분석 중..."):
+# --- UI 화면 및 실행 ---
+st.title("📊 실시간 AI+퀀트 투자 리포트")
+st.markdown("양대 시장 지수와 뉴스를 분석하여 **실시간 검증된 1픽**을 추천합니다.")
+
+if st.button("🚀 오늘자 분석 시작"):
+    with st.spinner("데이터 분석 및 시세 검증 중..."):
         try:
-            combined_headlines = get_headlines()
+            news_data = get_headlines()
             market_context = get_market_context()
 
-            # Claude 4.5 분석 요청 (종목 분석이 핵심!)
-            prompt = f"""
-            너는 대한민국 최고의 퀀트 투자 분석가야.
-            아래 지수 상황({market_context})과 뉴스 데이터({combined_headlines})를 결합하여,
-            대한민국 2,500개 전 종목 중 오늘 '무조건 이거다' 싶은 베스트 종목 딱 1개(Top 1)를 선정해라.
+            # [STEP 1] 뉴스 분석을 통한 타겟 종목 추출
+            selector_prompt = f"아래 뉴스를 보고 오늘 급등할 종목 1개의 '6자리 숫자 코드'만 출력해.\n뉴스: {news_data}"
+            selection = client.messages.create(
+                model="claude-sonnet-4-5-20250929",
+                max_tokens=10,
+                temperature=0,
+                messages=[{"role": "user", "content": selector_prompt}]
+            )
+            discovered_ticker = selection.content[0].text.strip()
+
+            # [STEP 2] 파이썬이 실시간 시세 강제 주입 (환각 원천 차단)
+            real_price, full_symbol = verify_realtime_price(discovered_ticker)
+
+            if not real_price:
+                st.error(f"❌ 종목({discovered_ticker})의 최신 시세 획득 실패. 토큰을 아끼기 위해 중단합니다.")
+                st.stop()
+
+            # [STEP 3] 검증된 데이터로 리포트 생성 (출력 요구사항 5가지 유지)
+            final_prompt = f"""
+            너는 대한민국 수석 퀀트다. 아래 실시간 데이터를 바탕으로 리포트를 작성해라.
+            현재가 정보는 반드시 제공된 {real_price}원만 사용하고, 네 지식을 절대 쓰지 마.
+
+            [시장 데이터]: {market_context}
+            [대상 종목]: {full_symbol} / 현재가: {real_price:,.0f}원
+            [뉴스 데이터]: {news_data}
 
             [출력 요구사항]:
             1. 📰 메인 뉴스 제목: 파급력 큰 3가지
             2. 💡 인사이트: 뉴스 이면의 의도 분석
             3. 🚀 1주일 내 5% 급등 기대 종목 Top 1: (종목명/목표가/손절가)
-            4. 🎯 추천 이유: 기술적 지표와 뉴스 재료 결합 분석 (왜 이 종목이 대장주인지 증명)
+            4. 🎯 추천 이유: 기술적 지표와 {real_price:,.0f}원 기준의 상승 여력 분석
             5. 🏁 최종 실행 가이드: 내일 오전 구체적 대응 전략
             """
 
             response = client.messages.create(
                 model="claude-sonnet-4-5-20250929",
                 max_tokens=2000,
-                temperature=0, 
-                messages=[{"role": "user", "content": prompt}]
+                temperature=0,
+                messages=[{"role": "user", "content": final_prompt}]
             )
 
             st.markdown("---")
             st.markdown(response.content[0].text)
-            st.success("✅ 종목 분석 및 리포트 생성이 완료되었습니다!")
+            st.success(f"✅ {full_symbol} (현재가: {real_price:,.0f}원) 분석 완료")
 
         except Exception as e:
-            st.error(f"❌ 오류 발생: {e}")
+            st.error(f"❌ 시스템 에러: {e}")
 
-# 사이드바
-st.sidebar.info(f"운영 모드: 전 종목 스캔 모드\n모델: Claude 4.5 Sonnet")
+st.sidebar.info("운영 모드: 지수분석 + 실시간 시세동기화\n모델: Claude 4.5 Sonnet")
