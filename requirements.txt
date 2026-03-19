@@ -1,3 +1,4 @@
+pykrx
 streamlit
 anthropic
 python-dotenv
