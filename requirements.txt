@@ -1,8 +1,7 @@
-pykrx
 streamlit
 anthropic
 python-dotenv
-requests
+pandas-ta
 yfinance
-pandas_ta
+pykrx
 setuptools
