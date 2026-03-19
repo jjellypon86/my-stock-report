@@ -3,19 +3,19 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 import yfinance as yf
-from pykrx import stock as krx
 import pandas_ta as ta
 import datetime
 from dotenv import load_dotenv
 from anthropic import Anthropic
+from pykrx import stock as krx
 
-# 1. 초기 인프라 설정
+# 1. 인프라 설정
 st.set_page_config(page_title="AI 투자 리포트", page_icon="📈", layout="centered")
 load_dotenv()
 api_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
 client = Anthropic(api_key=api_key)
 
-# 2. 뉴스 수집 함수 (기존 30개 확장 로직 복구)
+# 2. 뉴스 수집 (비즈니스 + IT 기술)
 def get_headlines():
     urls = [
         "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=ko&gl=KR&ceid=KR:ko",
@@ -23,58 +23,64 @@ def get_headlines():
     ]
     all_headlines = []
     for url in urls:
-        root = ET.fromstring(requests.get(url).content)
-        all_headlines.extend([item.find('title').text for item in root.findall('.//item')[:15]])
+        try:
+            root = ET.fromstring(requests.get(url, timeout=5).content)
+            all_headlines.extend([item.find('title').text for item in root.findall('.//item')[:15]])
+        except: continue
     sorted_headlines = sorted(list(set(all_headlines))) 
     return "\n".join([f"{i + 1}. {title}" for i, title in enumerate(sorted_headlines)])
 
-# 3. 시장 지수 분석 (기존 60일 RSI 로직 복구)
+# 3. 시장 지수 분석 (코스피/코스닥)
 def get_market_context():
     indices = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11"}
     summary = ""
     for name, ticker in indices.items():
         try:
-            df = yf.download(ticker, period="60d", progress=False, auto_adjust=True)
+            df = yf.download(ticker, period="60d", progress=False)
             if not df.empty:
                 rsi = float(ta.rsi(df['Close'], length=14).iloc[-1])
                 price = float(df['Close'].iloc[-1])
                 summary += f"{name}: {price:.2f} (RSI: {rsi:.1f}) / "
         except: continue
-    return summary
+    return summary if summary else "시장 지수 일시적 수집 불가"
 
-# 4. 실시간 시세 검증 함수 (시세 오류 방지용 추가)
+# 4. [핵심] 절대 뻗지 않는 실시간 시세 검증 (pykrx 1순위)
 def verify_realtime_price(ticker_code):
     try:
-        # 오늘 날짜 확인
-        today = datetime.date.today().strftime("%Y%m%d")
-        # 네이버/KRX에서 해당 종목의 오늘 시세 가져오기
-        df = krx.get_market_ohlcv_by_date(today, today, ticker_code)
+        # 최근 3영업일(주말 대비) 날짜 구하기
+        today = datetime.datetime.now()
+        dates_to_check = [(today - datetime.timedelta(days=i)).strftime("%Y%m%d") for i in range(4)]
         
-        if df.empty:
-            # 오늘 장 시작 전이면 어제 종가 가져오기
-            yesterday = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y%m%d")
-            df = krx.get_market_ohlcv_by_date(yesterday, yesterday, ticker_code)
-
-        if not df.empty:
-            current_price = int(df['종가'].iloc[-1])
-            return current_price, f"{ticker_code} (K-Market)"
-            
+        # 최신 날짜부터 역순으로 시세 확인
+        for date_str in dates_to_check:
+            df = krx.get_market_ohlcv_by_date(date_str, date_str, ticker_code)
+            if not df.empty and int(df['종가'].iloc[0]) > 0:
+                price = int(df['종가'].iloc[0])
+                return price, f"{ticker_code} (KRX 실시간)"
+                
     except Exception as e:
-        st.error(f"시세 조회 오류: {e}")
+        # pykrx마저 실패하면 yfinance로 최후의 시도
+        try:
+            stock = yf.Ticker(f"{ticker_code}.KQ")
+            df = stock.history(period="1d")
+            if not df.empty:
+                return float(df['Close'].iloc[-1]), f"{ticker_code}.KQ"
+        except: pass
+    
     return None, None
 
 # --- UI 화면 및 실행 ---
 st.title("📊 실시간 AI+퀀트 투자 리포트")
-st.markdown("양대 시장 지수와 뉴스를 분석하여 **실시간 검증된 1픽**을 추천합니다.")
+st.markdown("야후 파이낸스 장애를 우회하여 **KRX 직접 연결**로 실시간 시세를 검증합니다.")
 
-if st.button("🚀 오늘자 분석 시작"):
-    with st.spinner("데이터 분석 및 시세 검증 중..."):
+if st.button("🚀 무장애 1픽 분석 시작"):
+    with st.spinner("데이터 분석 및 KRX 시세 동기화 중..."):
         try:
             news_data = get_headlines()
             market_context = get_market_context()
 
-            # [STEP 1] 뉴스 분석을 통한 타겟 종목 추출
-            selector_prompt = f"아래 뉴스를 보고 오늘 급등할 종목 1개의 '6자리 숫자 코드'만 출력해.\n뉴스: {news_data}"
+            # [STEP 1] 뉴스 분석 -> 종목 코드 추출
+            selector_prompt = f"아래 뉴스를 보고 오늘 급등할 종목 1개의 '6자리 숫자 코드'만 출력해. (예: 108490)\n뉴스: {news_data}"
             selection = client.messages.create(
                 model="claude-sonnet-4-5-20250929",
                 max_tokens=10,
@@ -82,15 +88,23 @@ if st.button("🚀 오늘자 분석 시작"):
                 messages=[{"role": "user", "content": selector_prompt}]
             )
             discovered_ticker = selection.content[0].text.strip()
+            
+            # 숫자 6자리가 아닐 경우를 대비한 정제
+            import re
+            numbers = re.findall(r'\d{6}', discovered_ticker)
+            if not numbers:
+                st.error("AI가 유효한 6자리 종목 코드를 추출하지 못했습니다. 다시 시도해 주세요.")
+                st.stop()
+            clean_ticker = numbers[0]
 
-            # [STEP 2] 파이썬이 실시간 시세 강제 주입 (환각 원천 차단)
-            real_price, full_symbol = verify_realtime_price(discovered_ticker)
+            # [STEP 2] 파이썬이 실시간 시세 주입 (환각/404 원천 차단)
+            real_price, full_symbol = verify_realtime_price(clean_ticker)
 
             if not real_price:
-                st.error(f"❌ 종목({discovered_ticker})의 최신 시세 획득 실패. 토큰을 아끼기 위해 중단합니다.")
+                st.error(f"❌ 종목({clean_ticker})의 실시간 시세를 가져올 수 없습니다. 시스템을 중단하여 API 비용을 보호합니다.")
                 st.stop()
 
-            # [STEP 3] 검증된 데이터로 리포트 생성 (출력 요구사항 5가지 유지)
+            # [STEP 3] 검증된 데이터로 리포트 생성
             final_prompt = f"""
             너는 대한민국 수석 퀀트다. 아래 실시간 데이터를 바탕으로 리포트를 작성해라.
             현재가 정보는 반드시 제공된 {real_price}원만 사용하고, 네 지식을 절대 쓰지 마.
@@ -116,9 +130,7 @@ if st.button("🚀 오늘자 분석 시작"):
 
             st.markdown("---")
             st.markdown(response.content[0].text)
-            st.success(f"✅ {full_symbol} (현재가: {real_price:,.0f}원) 분석 완료")
+            st.success(f"✅ {full_symbol} (현재가: {real_price:,.0f}원) 분석 및 시세 동기화 완료")
 
         except Exception as e:
-            st.error(f"❌ 시스템 에러: {e}")
-
-st.sidebar.info("운영 모드: 지수분석 + 실시간 시세동기화\n모델: Claude 4.5 Sonnet")
+            st.error(f"❌ 분석 중 오류가 발생했습니다: {e}")
