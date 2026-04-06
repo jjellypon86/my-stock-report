@@ -1,3 +1,10 @@
+# 최상단에 추가 (pkg_resources 에러 강제 해결)
+import sys
+try:
+    import pkg_resources
+except ImportError:
+    import pip._vendor.pkg_resources as pkg_resources
+    sys.modules['pkg_resources'] = pkg_resources
 import streamlit as st
 import pandas as pd
 from pykrx import stock
