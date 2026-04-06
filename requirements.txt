@@ -2,3 +2,4 @@ streamlit>=1.32.0
 pandas>=2.0.0
 pykrx>=1.0.47
 plotly>=5.18.0
+numpy<2.0
