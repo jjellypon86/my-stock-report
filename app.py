@@ -68,19 +68,20 @@ def get_market_fundamentals(date_str):
 
 @st.cache_data(ttl=1800)
 def get_stock_data(ticker, days=30):
-    """개별 종목 데이터 수집"""
+    """개별 종목 데이터 수집 (에러 방지 로직 추가)"""
     try:
+        # 오늘이 아닌, 데이터가 있는 최근 날짜까지 조회하기 위해 넉넉히 잡음
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
+        start_date = end_date - timedelta(days=days + 10) # 기술적 지표 계산을 위해 넉넉히
 
-        # 가격 데이터
         df = stock.get_market_ohlcv_by_date(
             start_date.strftime("%Y%m%d"),
             end_date.strftime("%Y%m%d"),
             ticker
         )
 
-        if df.empty:
+        # [수정 포인트 1] 데이터가 없거나 너무 적으면 중단
+        if df is None or len(df) < 26: 
             return None
 
         # 기술적 지표 계산
@@ -89,24 +90,25 @@ def get_stock_data(ticker, days=30):
         df['MACD'] = df['MA12'] - df['MA26']
         df['Signal'] = df['MACD'].rolling(9).mean()
 
-        # 재무 지표
+        # [수정 포인트 2] 마지막 행 접근 전 데이터 유효성 최종 확인
+        if pd.isna(df['MACD'].iloc[-1]) or pd.isna(df['Signal'].iloc[-1]):
+            return None
+
+        # 재무 지표 (PER)
         try:
-            date_str = end_date.strftime("%Y%m%d")
-            fundamental = get_market_fundamentals(date_str)
-            if fundamental is not None and ticker in fundamental.index:
-                per = fundamental.loc[ticker, 'PER']
-            else:
-                per = None
+            # 가장 최근 영업일의 fundamental 데이터 가져오기
+            last_date = df.index[-1].strftime("%Y%m%d")
+            fundamental = get_market_fundamentals(last_date)
+            per = fundamental.loc[ticker, 'PER'] if ticker in fundamental.index else None
         except:
             per = None
 
         return {
             'price_data': df,
             'per': per,
-            'current_price': df['종가'].iloc[-1] if not df.empty else 0,
-            'volume_ratio': (df['거래량'].iloc[-1] / df['거래량'].iloc[-2]
-                             if len(df) > 1 and df['거래량'].iloc[-2] > 0
-                             else 0)
+            'current_price': int(df['종가'].iloc[-1]),
+            'volume_ratio': float(df['거래량'].iloc[-1] / df['거래량'].iloc[-2] 
+                             if df['거래량'].iloc[-2] > 0 else 0)
         }
     except Exception as e:
         return None
