@@ -66,40 +66,32 @@ def get_stock_list():
         return {}
 
 @st.cache_data(ttl=1800)
-def get_market_fundamentals(date_str):
-    """전체 종목 재무 지표 일괄 조회 (캐시 적용)"""
-    try:
-        return stock.get_market_fundamental_by_ticker(date_str)
-    except:
-        return None
-
-@st.cache_data(ttl=1800)
 def get_stock_data(ticker, days=30):
-    """개별 종목 데이터 수집 (안정성 강화 버전)"""
+    """안정적인 주식 데이터 수집 로직"""
     try:
-        # 종료일은 오늘, 시작일은 넉넉하게 40일 전으로 설정 (주말 제외 영업일 확보)
+        # 1. 조회 날짜 설정 (최근 40일치로 넉넉하게)
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=40)).strftime("%Y%m%d")
 
         df = stock.get_market_ohlcv_by_date(start_date, end_date, ticker)
 
-        # [핵심 수정] 데이터가 비어있거나 지표 계산에 부족하면 바로 포기
-        if df is None or len(df) < 26:
+        # [수정 1] 데이터가 비어있거나 너무 적으면 즉시 반환 (에러 방지)
+        if df is None or df.empty or len(df) < 26:
             return None
 
-        # 기술적 지표 계산
+        # 2. 기술적 지표 계산
         df['MA12'] = df['종가'].rolling(12).mean()
         df['MA26'] = df['종가'].rolling(26).mean()
         df['MACD'] = df['MA12'] - df['MA26']
         df['Signal'] = df['MACD'].rolling(9).mean()
 
-        # [중요] 계산 결과에 NaN이 있는지 마지막으로 확인
+        # [수정 2] NaN 값이 포함된 경우 제외 (골든크로스 계산 오류 방지)
         if pd.isna(df['MACD'].iloc[-1]) or pd.isna(df['Signal'].iloc[-1]):
             return None
 
-        # 재무 지표 (PER) - 최신 영업일 기준
-        last_valid_date = df.index[-1].strftime("%Y%m%d")
-        fundamental = get_market_fundamentals(last_valid_date)
+        # 3. 재무 지표 조회
+        last_date = df.index[-1].strftime("%Y%m%d")
+        fundamental = get_market_fundamentals(last_date)
         
         per = None
         if fundamental is not None and ticker in fundamental.index:
